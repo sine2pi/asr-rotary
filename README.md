@@ -1,4 +1,26 @@
+
 Extract frequencies from raw audio and map 1:1 to rotary frequency during training. Experiment
+
+Intuition:
+
+Different pitch regions should have different positional encoding characteristics
+Higher pitch → faster rotations → positions become more distinct
+Lower pitch → slower rotations → positions blend more smoothly
+
+Linguistic: Pitch patterns in speech carry meaningful prosodic information (questions, emphasis, emotion). By making positional encodings F0-aware, we help the model distinguish these patterns.
+
+Position-Specific Processing: Using different thetas for different positions based on their F0. 
+This allows the model to:
+
+Process high-pitched regions differently from low-pitched regions
+Pay attention to pitch transitions
+Potentially capture speech prosody better than fixed positional encodings
+
+Replace the standard fixed theta with F0-based theta:
+
+In high-pitched regions: faster rotations → positions become more distinct
+In low-pitched regions: slower rotations → positions blend more smoothly
+This effectively creates a "pitch-adaptive attention field" where the model's attention patterns dynamically adjust based on pitch characteristics.
 
 ``` python
 
