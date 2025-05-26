@@ -1,5 +1,6 @@
+Mapping pitch / f0 of human speech to rotary theta in automatic speech recognition model
 
-Extract frequencies from raw audio and map to rotary frequency during training. Working version.
+This extracts frequencies from raw audio and maps them to rotary theta during training. Working version. 
 
 Intuition:
 
