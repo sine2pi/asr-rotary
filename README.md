@@ -1,5 +1,5 @@
 
-Extract frequencies from raw audio and map 1:1 to rotary frequency during training. Working version.
+Extract frequencies from raw audio and map to rotary frequency during training. Working version.
 
 Intuition:
 
