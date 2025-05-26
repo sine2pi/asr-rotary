@@ -183,3 +183,73 @@ class rotary(nn.Module):
             return torch.cat([x1.type_as(x), x2], dim=-1)
 
 ```
+Pass through multihead as f0
+
+```python
+
+
+class MultiheadA(nn.Module):
+    def __init__(self, dims: int, head: int, debug=False):
+        super().__init__()
+
+        self.count = 0
+        self.debug = debug
+        self.pad_token = 0
+        self.dims = dims
+        self.head = head
+        self.head_dim = dims // head
+        self.q = Linear(dims, dims)
+        self.k = Linear(dims, dims, bias=False)
+        self.v = Linear(dims, dims)
+        self.o = Linear(dims, dims)
+        self.fzero = nn.Parameter(torch.tensor(0.0001))
+        
+        self.rope = rotary(
+            dims=self.head_dim,
+            max_ctx = 1500,
+            theta = 10000,
+            learned_freq = False,
+            variable_radius = False,
+            learned_radius = False,
+            debug = False)
+
+    def forward(self, x: Tensor, xa = None, mask = None, return_attn=False, f0=None):
+
+        z = default(xa, x)
+        q = self.q(x)
+        k = self.k(z)
+        v = self.v(z)
+
+        if f0 is not None:
+            qf = self.rope(q.size(1), f0=f0)
+            kf = self.rope(k.size(1), f0=f0)
+        else:
+            qf = self.rope(q.size(1))
+            kf = self.rope(k.size(1))
+
+        bat, ctx, dims = q.shape
+        scale = (dims // self.head) ** -0.25
+        q = q.view(*q.shape[:2], self.head, -1).permute(0, 2, 1, 3)
+        k = k.view(*k.shape[:2], self.head, -1).permute(0, 2, 1, 3)
+        v = v.view(*v.shape[:2], self.head, -1).permute(0, 2, 1, 3)
+        q = self.rope.apply_rotary(q, qf)
+        k = self.rope.apply_rotary(k, kf)
+        qk = (q * scale) @ (k * scale).transpose(-1, -2)
+        token_ids = k[:, :, :, 0]
+        zscale = torch.ones_like(token_ids)
+        fzero = torch.clamp(F.softplus(self.fzero), min=0.00001, max=0.001)
+        zscale[token_ids.float() == self.pad_token] = fzero.to(q.device, q.dtype)
+        if mask is not None:
+            mask = mask[:ctx, :ctx]
+            qk = qk + mask.unsqueeze(0).unsqueeze(0) * zscale.unsqueeze(-2).expand(qk.shape)
+        qk = qk * zscale.unsqueeze(-2)
+        if return_attn:
+            return qk, v
+        w = F.softmax(qk, dim=-1).to(q.dtype)
+        wv = (w @ v).permute(0, 2, 1, 3).flatten(start_dim=2)
+        if self.debug and self.count % 100 == 0:
+            print(f"Step {self.count}: x: {x.shape}, xa: {xa.shape if xa is not None else None}, mask: {mask.shape if mask is not None else None}")
+        self.count += 1
+        return self.o(wv), qk.detach()
+
+```
