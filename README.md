@@ -177,11 +177,22 @@ class rotary(nn.Module):
         else:
             x1 = x[..., :freqs.shape[-1]*2]
             x2 = x[..., freqs.shape[-1]*2:]
-            x1 = x1.float().reshape(*x1.shape[:-1], -1, 2).contiguous()
-            x1 = torch.view_as_complex(x1)
-            x1 = x1 * freqs
-            x1 = torch.view_as_real(x1).flatten(-2)
-            return torch.cat([x1.type_as(x), x2], dim=-1)
+            
+            if x.ndim == 2:  
+  
+                x1 = x1.unsqueeze(0)
+                x1 = x1.float().reshape(*x1.shape[:-1], -1, 2).contiguous()
+                x1 = torch.view_as_complex(x1)
+                x1 = x1 * freqs
+                x1 = torch.view_as_real(x1).flatten(-2)
+                x1 = x1.squeeze(0)  
+                return torch.cat([x1.type_as(x), x2], dim=-1)
+            else:  
+                x1 = x1.float().reshape(*x1.shape[:-1], -1, 2).contiguous()
+                x1 = torch.view_as_complex(x1)
+                x1 = x1 * freqs
+                x1 = torch.view_as_real(x1).flatten(-2)
+                return torch.cat([x1.type_as(x), x2], dim=-1)
 
 ```
 Pass through multihead as f0
