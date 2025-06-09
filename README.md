@@ -46,6 +46,7 @@ This betweenness score is used to create continuous interpolated positions, allo
 a = self.btw_g * (btw - 0.5) * 2.0
 pa = torch.clamp(pos + a, 0, self.max_ctx - 1)
 ```
+Note that everything is experimental and in pre beta stage. This option works as it should but hasent been optimized. At the moment, a few of the vectors are a little large and will eat more vram than they should.
 
 #### Variable Radius
 
@@ -56,6 +57,7 @@ if self.vradius:
     radius = F.softplus(self.radius)
     freqs = torch.polar(radius.unsqueeze(0).expand_as(freqs), freqs)
 ```
+Not sure on this one yet..
 
 ### Configuration Parameters
 
