@@ -5,8 +5,6 @@ class rotary(nn.Module):
         super().__init__()
 
         self.use_pbias = use_pbias
-        use_2d_axial = False
-        self.spec_shape = spec_shape
         self.last_f0_theta = None
         self.debug = debug
         self._counter = 0
@@ -15,34 +13,23 @@ class rotary(nn.Module):
         self.head_dim = dims // head
         self.max_ctx = max_ctx
         self.radii = radii
-        f0_factor = 0.5
         self.learned_adaptation: bool = False
         radius = 1
         dim = self.head_dim
         self.dim = dim
 
-        if self.learned_adaptation:
-            self.f0_scale = nn.Parameter(torch.tensor(f0_factor, device=device, dtype=dtype), requires_grad=True)
-        else:
-            self.register_buffer('f0_scale', torch.tensor(f0_factor))
-
+        theta = torch.tensor(theta, device=device, dtype=dtype)
         self.theta = nn.Parameter(torch.tensor(theta, device=device, dtype=dtype), requires_grad=True)
-        
-        # freqs = 1. / (theta ** (torch.arange(0, dim, 2, device=device, dtype=dtype)[:(dim // 2)].float() / dims))
-        # self.freqs = nn.Parameter(torch.tensor(freqs, device=device, dtype=dtype), requires_grad=True)
-        # self.radius = nn.Parameter(torch.ones(radius, device=device, dtype=dtype), requires_grad=True)
-        # freq_data = 1.0 / (theta ** (torch.arange(start=0, end=dim, step=2).float() / dim))
-        # self.inv_freq = nn.Parameter(freq_data, requires_grad=True)
-        
-        freqb = 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000 
-        inv_freq = nn.Parameter(torch.tensor(freqb, device=device, dtype=dtype), requires_grad=True)
+        self.radius = nn.Parameter(torch.ones(radius, device=device, dtype=dtype), requires_grad=True)
+        inv_freq = (theta / 220.0) * 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000
+        self.inv_freq = nn.Parameter(torch.tensor(inv_freq, device=device, dtype=dtype), requires_grad=True)
 
-    def update_base(self, pitch):
-        theta = pitch.squeeze(0).to(device, dtype)
-        f0_mean = theta.mean() + 1e-8
-        inv_freq = 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000 
+    def update_base(self, f0):
+        f0 = f0.squeeze(0).to(device, dtype)
+        theta = f0.mean() + 1e-8
+        inv_freq = (theta / 220.0) * 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), self.dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000
         self.inv_freq.data.copy_(inv_freq)
-        self.theta.data.copy_(f0_mean)
+        self.theta.data.copy_(theta)
 
     def get_pitch_bias(self, f0):
         if f0 is None:
@@ -92,14 +79,15 @@ class rotary(nn.Module):
         t = torch.arange(ctx, device=device, dtype=dtype)
 
         if f0 is not None:
+            freqs = self.inv_freq
             f0_mean = f0.mean()
             theta = f0_mean + 1e-8
-            freqs = self.inv_freq
+            freqs = (theta / 220.0) * 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000
+
             if "rotary1" in self.debug:
                 print(f"{layer}: {theta:.2f} : {f0_mean:.2f} : {ctx} ")
         else:
             freqs = self.inv_freq
-            
         freqs = t[:, None] * freqs[None, :]
         if self.radii:
             if f0 is not None:
