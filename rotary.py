@@ -1,133 +1,121 @@
-
 class rotary(nn.Module):
-    def __init__(self, dims, head, max_ctx=1500, theta=10000, radii=False, debug: List[str] = [], 
-                 use_pbias=False, spec_shape=None):
-        super().__init__()
+    def __init__(self, dims, head, max_ctx=1500, radii=False, debug: List[str] = [], use_pbias=False, axial=False, spec_shape=None):
 
+        super(rotary, self).__init__()
         self.use_pbias = use_pbias
-        self.last_f0_theta = None
-        self.debug = debug
-        self._counter = 0
         self.dims = dims
         self.head = head
         self.head_dim = dims // head
-        self.max_ctx = max_ctx
         self.radii = radii
-        self.learned_adaptation: bool = False
-        radius = 1
-        dim = self.head_dim
-        self.dim = dim
+        self.debug = debug
+        self.counter = 0
+        self.last_theta = None
+        self.axial = axial
 
-        theta = torch.tensor(theta, device=device, dtype=dtype)
-        self.theta = nn.Parameter(torch.tensor(theta, device=device, dtype=dtype), requires_grad=True)
-        self.radius = nn.Parameter(torch.ones(radius, device=device, dtype=dtype), requires_grad=True)
-        inv_freq = (theta / 140.0) * 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000
-        self.inv_freq = nn.Parameter(torch.tensor(inv_freq, device=device, dtype=dtype), requires_grad=True)
+        self.bias = nn.Parameter(torch.zeros(max_ctx, dims // 2), requires_grad=True if use_pbias else False)
+        theta = (torch.tensor(10000, device=device, dtype=dtype))
+        self.theta = nn.Parameter(theta, requires_grad=True)    
+        self.theta_values = []
 
-    def update_base(self, f0):
-        f0 = f0.squeeze(0).to(device, dtype)
-        theta = f0.mean() + 1e-8
-        inv_freq = (theta / 140.0) * 700 * (torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 8000/700)), self.dim // 2, device=device, dtype=dtype) / 2595) - 1) / 1000
-        self.inv_freq.data.copy_(inv_freq)
-        self.theta.data.copy_(theta)    
+        if axial and spec_shape is not None:
+            time_frames, freq_bins = spec_shape
+            self.time_frames = time_frames
+            self.freq_bins = freq_bins
+            
+            time_theta = 50.0
+            time_freqs = 1.0 / (time_theta ** (torch.arange(0, dims, 4)[:(dims // 4)].float() / dims))
+            self.register_buffer('time_freqs', time_freqs)
+            
+            freq_theta = 100.0
+            freq_freqs = 1.0 / (freq_theta ** (torch.arange(0, dims, 4)[:(dims // 4)].float() / dims))
+            self.register_buffer('freq_freqs', freq_freqs)
 
-    def return_f0(self, f0=None):
-        if f0 is not None:
-            self.f0 = f0
-            return f0.squeeze(0).to(device, dtype)
-        elif hasattr(self, 'f0') and self.f0 is not None:
-            return self.f0.squeeze(0).to(device, dtype)
-        return None
-
-    def get_pitch_bias(self, f0):
+    def pitch_bias(self, f0):
         if f0 is None:
             return None
         f0_flat = f0.squeeze().float()
         f0_norm = (f0_flat - f0_flat.mean()) / (f0_flat.std() + 1e-8)
         f0_sim = torch.exp(-torch.cdist(f0_norm.unsqueeze(1), 
-                                    f0_norm.unsqueeze(1)) * self.pitch_scale)
+                                    f0_norm.unsqueeze(1)))
         return f0_sim.unsqueeze(0).unsqueeze(0)
 
-    def f0proj(self, f0):
-        if f0.ndim == 3:
-            f0 = f0.squeeze(0)
-        self.f0_proj = nn.Linear(1, self.head_dim // 2, device=device, dtype=dtype)
-        f0 = f0.to(device, dtype)
-        f0 = self.f0_proj(f0.unsqueeze(-1))  
-        if f0.ndim == 3:
-            f0 = f0.squeeze(0)
-        return f0.to(device=device, dtype=dtype)
 
-    def align_f0(self, ctx):
-        f0 = self.return_f0()
-        f0 = self.f0proj(f0)
-        if f0.dim() == 3:
-            batch, length, dims = f0.shape
-            if length == ctx:
-                return f0
-            frames = length / ctx
-            idx = torch.arange(ctx, device=f0.device)
-            idx = (idx * frames).long().clamp(0, length - 1)
-            return f0[:, idx, :]
-        if f0.dim() == 1:
-            length = f0.shape[0]
-            if length == ctx:
-                return f0
-            frames = length / ctx
-            idx = torch.arange(ctx, device=f0.device)
-            idx = (idx * frames).long().clamp(0, length - 1)
-            return f0[idx]
+    def _apply_radii(self, freqs, f0, ctx):
+        if self.radii and f0 is not None:
+            radius = f0.to(device, dtype)
+            # L = radius.shape[0]
+            # if L != ctx:
+            #     F = L / ctx
+            #     idx = torch.arange(ctx, device=f0.device)
+            #     idx = (idx * F).long().clamp(0, L - 1)
+            #     radius = radius[idx]
+            #     return torch.polar(radius.unsqueeze(-1), freqs), radius
+            # else:
+            return torch.polar(radius.unsqueeze(-1), freqs), radius
         else:
-            length, dims = f0.shape
-            if length == ctx:
-                return f0 
-            frames = length / ctx
-            idx = torch.arange(ctx, device=f0.device)
-            idx = (idx * frames).long().clamp(0, length - 1)
-            return f0[idx, :]
-       
-    def forward(self, x=None, f0=None, enc=None, layer=None, input_type="audio") -> Tensor:
-        if isinstance(x, int):
-            ctx = x
-        elif isinstance(x, torch.Tensor) and x.ndim == 3:
-            batch, ctx, dims = x.shape
+            return torch.polar(torch.ones_like(freqs), freqs), None
+
+    def check_f0(self, f0, f0t, ctx):
+        if f0 is not None and f0.shape[1] == ctx:
+            return f0
+        elif f0t is not None and f0t.shape[1] == ctx:
+            return f0t
         else:
-            batch, head, ctx, head_dim = x.shape
+            return None         
+
+    def axial_freqs(self, ctx):
+        if not self.axial:
+            return None
+        time_frames = self.time_frames
+        freq_bins = self.freq_bins
+    
         t = torch.arange(ctx, device=device, dtype=dtype)
-        freqs = self.inv_freq
-        freqs = t[:, None] * freqs[None, :]
+        t_x = (t % time_frames).float()
+        t_y = torch.div(t, time_frames, rounding_mode='floor').float()
+        freqs_x = torch.outer(t_x, self.time_freqs)
+        freqs_y = torch.outer(t_y, self.freq_freqs)
+        freqs_cis_x = torch.polar(torch.ones_like(freqs_x), freqs_x)
+        freqs_cis_y = torch.polar(torch.ones_like(freqs_y), freqs_y)
+        return torch.cat([freqs_cis_x, freqs_cis_y], dim=-1)
 
-        if self.radii:
-            radius = self.align_f0(ctx)
-            if "rotary2" in self.debug:
-                print(f"{layer} radius: {radius} ctx: {ctx}")
+    def _compute_freqs_base(self):
+        mel_scale = torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 2000/80)), self.head_dim // 2, device=device, dtype=dtype) / 2595) - 1
+        return 80 * mel_scale / 1000  
+
+    def forward(self, x, ctx, en=None, rope: List[str] = ["4"]) -> Tensor:
+     
+        if "1" in rope: # Standard RoPE 
+            freqs = 1.0 / (self.theta ** (torch.arange(0, self.head_dim, 2, device=device, dtype=dtype) / (self.head_dim // 2)))
+        if "2" in rope: # 200Hz - 4000Hz (covers 95% of speech content)
+            freqs = (self.theta / 220.0) * 200 * self.mel_scale_200_4000 / 1000
+        if "3" in rope: # 150Hz - 6000Hz (covers speech + some emotion/intonation)
+            freqs = (self.theta / 220.0) * 150 * self.mel_scale_150_6000 / 1000
+        if "4" in rope: # 80Hz - 2000Hz (focus on fundamental frequencies + first few harmonics)
+            freqs = (self.theta / 220.0) * 80 * self.mel_scale_80_2000 / 1000
+
+        f0 = en.get("f0") if en is not None else None 
+        f0t = en.get("f0t") if en is not None else None 
+
+        f0 = self.check_f0(f0, f0t, ctx)
+        if f0 is not None:
+            # if f0.dim() == 2:
+            #     f0 = f0.squeeze(0) 
+            theta = f0 + self.theta  
         else:
-            radius = freqs
-        freqs = torch.polar(torch.ones_like(radius), freqs)
+            theta = self.theta 
+        freqs = self.theta_freqs(theta)
+        t = torch.arange(ctx, device=device, dtype=dtype)
+        freqs = t[:, None] * freqs
+        freqs, radius = self._apply_radii(freqs, f0, ctx)
 
-        if "rotary3" in self.debug:
-            print(f"{layer} count {self._counter} f0: {f0.shape if f0 is not None else None} freqs: {freqs.shape}  radius: {radius.shape} ctx: {ctx}")
-            print(f"freqs mean: {freqs.mean():.2f} inv_freq mean: {self.inv_freq.mean():.2f} theta: {self.theta.item():.2f} radius mean: {radius.mean():.2f} radius shape: {radius.shape} ctx: {ctx}")
+        if self.axial and f == "spectrogram":
+            freqs_2d = self.axial_freqs(ctx)
+            if freqs_2d is not None:
+                return freqs_2d.unsqueeze(0)
 
-        if "rotary_detail" in self.debug:
-            print(f"\n==== Detailed RoPE Analysis ====")
-            print(f"Layer: {layer}, Context Length: {ctx}")
-            print(f"F0 stats: mean={self.theta.item():.2f}")
-            print(f"inv_freq range: [{self.inv_freq.min().item():.4f}, {self.inv_freq.max().item():.4f}]")
-            
-            if self.radii:
-                print(f"Radius Shape: {radius.shape}, Mean: {radius.mean().item():.4f}")
-                print(f"Radius[0]: {radius[0][:5].cpu().numpy()}") 
-                print(f"Radius[mid]: {radius[ctx//2][:5].cpu().numpy()}")  
-                print(f"Radius[end]: {radius[-1][:5].cpu().numpy()}")  
-            
-            print(f"Final freqs shape: {freqs.shape}")
-            print(f"Freqs[0]: {freqs[0][:5].cpu().numpy()}")
-            print(f"Freqs[mid]: {freqs[ctx//2][:5].cpu().numpy()}")
-            print(f"Freqs[end]: {freqs[-1][:5].cpu().numpy()}")
-            print("================================\n")      
-        
-        self._counter += 1
+        if "radius" in self.debug and self.counter == 10:
+            print(f"  [{layer}] [Radius] {radius.shape if radius is not None else None} {radius.mean() if radius is not None else None} [Theta] {theta.mean() if theta is not None else None} [f0] {f0.shape if f0 is not None else None} [Freqs] {freqs.shape} {freqs.mean():.2f} [ctx] {ctx}")
+        self.counter += 1
         return freqs.unsqueeze(0)
 
     @staticmethod
@@ -142,3 +130,33 @@ class rotary(nn.Module):
         x1 = torch.view_as_real(x1).flatten(-2)
         x1 = x1.view(orig_shape)
         return torch.cat([x1.type_as(x), x2], dim=-1)
+
+
+
+#####
+
+def pitch_tokens(wav, t, labels, f0)
+        wav = torch.from_numpy(wavnp)
+        t2 = torch.from_numpy(t)
+        audio_duration = len(wav) / sample_rate
+        T = len(labels)
+        tok_dur_sec = audio_duration / T
+        token_starts = torch.arange(T) * tok_dur_sec
+        token_ends = token_starts + tok_dur_sec
+        start_idx = torch.searchsorted(t2, token_starts, side="left")
+        end_idx = torch.searchsorted(t2, token_ends, side="right")
+        pitch_tok = torch.zeros(T, dtype=torch.float32)
+        for i in range(T):
+            lo, hi = start_idx[i], max(start_idx[i]+1, end_idx[i]) # type: ignore
+            segment = f0_np[lo:hi]
+            if mode == "mean":
+                pitch_tok[i] = segment.mean()
+            elif mode == "median":
+                pitch_tok[i] = torch.median(segment)
+            else:
+                pitch_tok[i] = segment[-1]
+        pitch_tok[pitch_tok < 100.0] = 0.0
+        bos_pitch = pitch_tok[0] if len(pitch_tok) > 0 else 0.0
+        f0t_tensor = torch.cat([torch.tensor([bos_pitch]), pitch_tok])
+        f0t = torch.where(f0t_tensor == 0.0, torch.zeros_like(f0t_tensor), (f0t_tensor - 71.0) / (500.0 - 71.0))
+    return f0t
