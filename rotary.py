@@ -1,3 +1,35 @@
+### Simple implimentation 
+
+class rotary(nn.Module):
+    def __init__(self, dims, head):
+        super(rotary, self).__init__()
+        self.dims = dims
+        self.head = head
+        self.head_dim = dims // head
+        self.theta = nn.Parameter((torch.tensor(10000, device=device, dtype=dtype)), requires_grad=True)  
+        self.register_buffer('freqs_base', self._compute_freqs_base(), persistent=False)
+
+    def _compute_freqs_base(self):
+        mel_scale = torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 4000/200)), self.head_dim // 2, device=device, dtype=dtype) / 2595) - 1
+        return 200 * mel_scale / 1000 
+
+    def forward(self, x, ctx) -> Tensor:
+        freqs = (self.theta / 220.0) * self.freqs_base
+        pos = torch.arange(ctx, device=device, dtype=dtype) 
+        freqs = pos[:, None] * freqs
+        freqs=torch.polar(torch.ones_like(freqs), freqs)
+
+        x1 = x[..., :freqs.shape[-1]*2]
+        x2 = x[..., freqs.shape[-1]*2:]
+        orig_shape = x1.shape
+        x1 = x1.float().reshape(*x1.shape[:-1], -1, 2).contiguous()
+        x1 = torch.view_as_complex(x1) * freqs
+        x1 = torch.view_as_real(x1).flatten(-2)
+        x1 = x1.view(orig_shape)
+        return torch.cat([x1.type_as(x), x2], dim=-1)
+
+## complicated version
+
 class rotary(nn.Module):
     def __init__(self, dims, head, max_ctx=1500, radii=False, debug: List[str] = [], use_pbias=False, axial=False, spec_shape=None):
 
