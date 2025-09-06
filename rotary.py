@@ -1,23 +1,38 @@
 ### Simple implimentation 
 
 class rotary(nn.Module):
-    def __init__(self, dims, head):
-        super(rotary, self).__init__()
-        self.dims = dims
-        self.head = head
-        self.head_dim = dims // head
-        self.theta = nn.Parameter((torch.tensor(10000, device=device, dtype=dtype)), requires_grad=True)  
-        self.register_buffer('freqs_base', self._compute_freqs_base(), persistent=False)
+    """
+    Experimental rotary embedding that modulates rotation radius based on f0 (pitch) contour.
+    """
+    def __init__(n, dims, head):
+        super().__init__()
+        n.dims = dims
+        n.head = head
+        n.head_dim = dims // head
+        n.theta = nn.Parameter(torch.tensor(10000.0), requires_grad=True)
+        n.lna = nn.LayerNorm(dims)
+        n.register_buffer('freqs_base', n._compute_freqs_base(), persistent=False)
 
-    def _compute_freqs_base(self):
-        mel_scale = torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 4000/200)), self.head_dim // 2, device=device, dtype=dtype) / 2595) - 1
-        return 200 * mel_scale / 1000 
+    def _compute_freqs_base(n):
+        mel_scale = torch.pow(10, torch.linspace(0, 2595 * torch.log10(torch.tensor(1 + 4000/200)), n.head_dim // 2, device=device, dtype=dtype) / 2595) - 1
+        return 200 * mel_scale / 1000
 
-    def forward(self, x, ctx) -> Tensor:
-        freqs = (self.theta / 220.0) * self.freqs_base
-        pos = torch.arange(ctx, device=device, dtype=dtype) 
-        freqs = pos[:, None] * freqs
-        freqs=torch.polar(torch.ones_like(freqs), freqs)
+    def forward(n, x, xa = None):
+        b, h, c, d = x.shape
+
+        t = torch.arange(c, device=device, dtype=dtype)
+        freqs = torch.outer(t, n.freqs_base.to(device, dtype))
+        freqs = freqs.view(1, 1, c, n.head_dim // 2)
+
+        # if xa is not None:
+        #     freqs = (torch.arange(0, x.shape[2], device=device))[:, None] * (xa * n.theta / 220.0) * n.freqs_base        
+        #     freqs = (freqs + torch.pi) % (2 * torch.pi) - torch.pi 
+
+        if xa is not None:
+            radius = 1.0 + xa[:, :, :n.head_dim // 2]
+            freqs = torch.polar(radius, freqs)
+        else:
+            freqs = torch.polar(torch.ones_like(freqs), freqs)
 
         x1 = x[..., :freqs.shape[-1]*2]
         x2 = x[..., freqs.shape[-1]*2:]
@@ -28,7 +43,7 @@ class rotary(nn.Module):
         x1 = x1.view(orig_shape)
         return torch.cat([x1.type_as(x), x2], dim=-1)
 
-## complicated version
+## longer version
 
 class rotary(nn.Module):
     def __init__(self, dims, head, max_ctx=1500, radii=False, debug: List[str] = [], use_pbias=False, axial=False, spec_shape=None):
@@ -75,6 +90,7 @@ class rotary(nn.Module):
     def _apply_radii(self, freqs, f0, ctx):
         if self.radii and f0 is not None:
             radius = f0.to(device, dtype)
+            # this simple method might not be worse than interpolation
             # L = radius.shape[0]
             # if L != ctx:
             #     F = L / ctx
