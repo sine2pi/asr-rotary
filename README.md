@@ -74,7 +74,7 @@ class rotary(nn.Module):
         self.theta = nn.Parameter(theta, requires_grad=True)    
         self.theta_values = []
 
-        if axial and spec_shape is not None:
+        if axial and spec_shape is not None: # for 2d spectrograms
             time_frames, freq_bins = spec_shape
             self.time_frames = time_frames
             self.freq_bins = freq_bins
@@ -87,7 +87,7 @@ class rotary(nn.Module):
             freq_freqs = 1.0 / (freq_theta ** (torch.arange(0, dims, 4)[:(dims // 4)].float() / dims))
             self.register_buffer('freq_freqs', freq_freqs)
 
-    def pitch_bias(self, f0):
+    def pitch_bias(self, f0): # meh
         if f0 is None:
             return None
         f0_flat = f0.squeeze().float()
@@ -95,7 +95,6 @@ class rotary(nn.Module):
         f0_sim = torch.exp(-torch.cdist(f0_norm.unsqueeze(1), 
                                     f0_norm.unsqueeze(1)))
         return f0_sim.unsqueeze(0).unsqueeze(0)
-
 
     def _apply_radii(self, freqs, f0, ctx):
         if self.radii and f0 is not None:
